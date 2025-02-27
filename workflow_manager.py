@@ -8,7 +8,11 @@ from agents.search_agent import SearchAgent
 from agents.integration_agent import IntegrationAgent
 from agents.abstract_agent import AbstractAgent
 from agents.transformation_agent import TransformationAgent
+from agents.writing_agent import WritingAgent
+from agents.rag_agent import RAGAgent
 import concurrent.futures
+import time
+import streamlit as st
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +31,7 @@ class WorkflowState(TypedDict, total=False):
     abstracts: List[Dict[str, Any]]
     final_csv_path: str
     report: str
+    latex_report: Dict[str, Any]
 
 class ResearchWorkflow:
     def __init__(self, 
@@ -48,7 +53,9 @@ class ResearchWorkflow:
         self.search_agent = SearchAgent()
         self.integration_agent = IntegrationAgent(data_dir=data_dir)
         self.abstract_agent = AbstractAgent(provider=model_provider, model_id=model_id, api_key=api_key)
-        self.transformation_agent = TransformationAgent()
+        self.transformation_agent = TransformationAgent(data_dir=data_dir)
+        self.writing_agent = WritingAgent(provider=model_provider, model_id=model_id, api_key=api_key)
+        self.rag_agent = RAGAgent()
         self.data_dir = data_dir
         logger.info("All agents initialized successfully")
         
@@ -65,18 +72,20 @@ class ResearchWorkflow:
         workflow.add_node("integration", self._integration_step)
         workflow.add_node("abstracting", self._abstract_step)
         workflow.add_node("transformation", self._transformation_step)
+        workflow.add_node("writing", self._writing_step)
         
         # Define edges
         workflow.add_edge("planning", "searching")
         workflow.add_edge("searching", "integration")
         workflow.add_edge("integration", "abstracting")
         workflow.add_edge("abstracting", "transformation")
+        workflow.add_edge("transformation", "writing")
         
         # Set entry point
         workflow.set_entry_point("planning")
 
-        # Mark transformation as the end node
-        workflow.set_finish_point("transformation") 
+        # Mark writing as the end node
+        workflow.set_finish_point("writing") 
         
         # Compile the graph
         return workflow.compile()
@@ -113,30 +122,19 @@ class ResearchWorkflow:
         return {"articles": articles, "article_contents": article_contents}
         
     def _integration_step(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Save articles to CSV and download content"""
+        """Save articles to CSV and download PDFs"""
         logger.info("💾 Starting Integration Step")
         articles = state.get("articles", [])
-        article_contents = state.get("article_contents", [])
         plan = state.get("plan", {})
         topic = plan.get("topic", "research_topic")
         
-        # Save articles to CSV
-        logger.info("Saving articles to CSV...")
-        csv_path = self.integration_agent.save_articles_to_csv(articles, topic)
-        logger.info(f"Articles saved to: {csv_path}")
-        
-        # Download and save article content to files
-        logger.info("Saving article contents to files...")
-        url_to_filepath = self.integration_agent.download_article_content(articles, article_contents)
-        logger.info(f"Saved {len(url_to_filepath)} article contents to files")
-        
-        # Update CSV with file paths
-        logger.info("Updating CSV with file paths...")
-        updated_csv_path = self.integration_agent.update_csv_with_filepaths(csv_path, url_to_filepath)
-        logger.info(f"Updated CSV saved to: {updated_csv_path}")
+        # Download PDFs and save to CSV
+        logger.info("Processing articles...")
+        csv_path, url_to_filepath = self.integration_agent.process_articles(articles, topic)
+        logger.info(f"Articles processed and saved to: {csv_path}")
         
         return {
-            "csv_path": updated_csv_path,
+            "csv_path": csv_path,
             "url_to_filepath": url_to_filepath
         }
         
@@ -144,6 +142,8 @@ class ResearchWorkflow:
         """Generate abstracts for articles"""
         logger.info("📝 Starting Abstract Generation Step")
         url_to_filepath = state.get("url_to_filepath", {})
+        if url_to_filepath is None:
+            url_to_filepath = {}
         logger.info(f"Processing {len(url_to_filepath)} articles for abstract generation")
         
         abstracts = []
@@ -173,27 +173,38 @@ class ResearchWorkflow:
         return {"abstracts": abstracts}
         
     def _transformation_step(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Update CSV with abstracts"""
+        """Generate CSV with details and communicate with RAGAgent if information is missing"""
         logger.info("🔄 Starting Transformation Step")
         csv_path = state.get("csv_path", "")
-        abstracts = state.get("abstracts", [])
-        plan = state.get("plan", {})
-        topic = plan.get("topic", "research_topic")
+        articles = state.get("articles", [])
         
-        # Update CSV with abstracts
-        logger.info("Updating CSV with generated abstracts...")
-        updated_csv_path = self.transformation_agent.update_csv_with_abstracts(csv_path, abstracts)
-        logger.info(f"Updated CSV with abstracts saved to: {updated_csv_path}")
-        
-        # Generate summary report
-        logger.info("Generating final summary report...")
-        report = self.transformation_agent.generate_summary_report(updated_csv_path, topic)
-        logger.info("Summary report generated successfully")
-        logger.info("✨ Workflow completed successfully ✨")
+        # Generate CSV with details
+        logger.info("Generating CSV with article details...")
+        detailed_csv_path = self.transformation_agent.generate_csv_with_details(articles, self.rag_agent)
+        logger.info(f"Detailed CSV saved to: {detailed_csv_path}")
         
         return {
-            "final_csv_path": updated_csv_path,
-            "report": report
+            "final_csv_path": detailed_csv_path
+        }
+
+    def _writing_step(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate LaTeX academic report"""
+        logger.info("📝 Starting Writing Step")
+        plan = state.get("plan", {})
+        csv_path = state.get("final_csv_path", "")
+        
+        logger.info("Writing academic report...")
+        latex_report = self.writing_agent.write_report(plan, csv_path)
+        
+        # Save LaTeX document to file
+        report_path = os.path.join(self.data_dir, "academic_report.tex")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(latex_report["latex_document"])
+        logger.info(f"LaTeX report saved to: {report_path}")
+        
+        return {
+            "latex_report": latex_report,
+            "report_path": report_path
         }
         
     def run(self, topic: str) -> Dict[str, Any]:
@@ -211,8 +222,12 @@ class ResearchWorkflow:
         state = {"topic": topic}
         
         # Run the workflow
-        logger.info("Executing workflow graph...")
-        result = self.graph.invoke(state)
-        logger.info("🏁 Workflow execution completed")
-        
-        return result
+        try:
+            # Use the correct method to invoke the graph
+            # Instead of directly calling the graph object, use graph.invoke()
+            result = self.graph.invoke(state)
+            logger.info("🏁 Workflow execution completed")
+            return result
+        except Exception as e:
+            logger.error(f"Error in workflow execution: {str(e)}")
+            raise

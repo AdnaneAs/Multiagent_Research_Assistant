@@ -16,7 +16,7 @@ class SearchAgent:
         """Initialize the search agent with DuckDuckGo"""
         logger.info("Initializing SearchAgent with DuckDuckGo")
         self.search_engine = DDGS()
-        self.max_results = 100
+        self.max_results = 10
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
@@ -27,6 +27,14 @@ class SearchAgent:
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
         
+    def is_valid_arxiv_url(self, url: str) -> bool:
+        """Check if URL is from arxiv.org"""
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc.endswith('arxiv.org')
+        except:
+            return False
+
     def search_articles(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Search for articles based on the search queries from the plan
@@ -46,8 +54,8 @@ class SearchAgent:
         for query in search_queries:
             logger.info(f"Executing search query: {query}")
             try:
-                # Add 'latest research' or 'recent articles' to focus on trending content
-                enhanced_query = f"{query} latest research articles website: arxiv.org"
+                # Focus specifically on arXiv results
+                enhanced_query = f"site:arxiv.org {query}"
                 
                 # Get search results
                 search_results = self.search_engine.text(
@@ -56,13 +64,34 @@ class SearchAgent:
                 )
                 
                 for result in search_results:
-                    # Extract relevant information
+                    url = result.get("href", "")
+                    # Only process arXiv URLs
+                    if not self.is_valid_arxiv_url(url):
+                        continue
+                    
+                    # Extract PDF URL with improved logic
+                    pdf_url = None
+                    if '/abs/' in url:
+                        # Standard arXiv abstract URL format
+                        pdf_url = url.replace('/abs/', '/pdf/') + '.pdf'
+                    elif '/pdf/' in url:
+                        # If already a PDF URL
+                        pdf_url = url if url.endswith('.pdf') else url + '.pdf'
+                    else:
+                        # Try to extract arXiv ID and construct PDF URL
+                        import re
+                        arxiv_id_match = re.search(r'(\d+\.\d+)', url)
+                        if arxiv_id_match:
+                            arxiv_id = arxiv_id_match.group(1)
+                            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+                        
                     article = {
                         "title": result.get("title", ""),
-                        "url": result.get("href", ""),
+                        "url": url,
                         "snippet": result.get("body", ""),
-                        "source": self._extract_domain(result.get("href", "")),
-                        "query": query
+                        "source": "arxiv.org",
+                        "query": query,
+                        "pdf_url": pdf_url
                     }
                     
                     # Only add if URL is not already in results

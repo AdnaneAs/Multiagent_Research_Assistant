@@ -39,13 +39,34 @@ class PlanningAgent:
         1. A clear breakdown of subtopics to explore
         2. At least 5 specific search queries that would help gather comprehensive information
         3. A short description of the expected outcome of this research
+        4. A LaTeX report structure with the following sections:
+           - Introduction (context, problem statement, objectives)
+           - Literature Review (organized by themes)
+           - Methodology (if applicable)
+           - Results and Discussion
+           - Conclusion
+        5. Questions to answer in each section of the report
         
         Format your response as a JSON with the following structure:
         {{
             "subtopics": ["subtopic1", "subtopic2", ...],
             "search_queries": ["query1", "query2", ...],
             "expected_outcome": "description of expected outcome",
-            "research_strategy": "brief description of research strategy"
+            "research_strategy": "brief description of research strategy",
+            "latex_report_plan": {{
+                "introduction": ["point1", "point2", ...],
+                "literature_review": ["theme1", "theme2", ...],
+                "methodology": ["method1", "method2", ...],
+                "results_discussion": ["aspect1", "aspect2", ...],
+                "conclusion": ["conclusion_point1", "conclusion_point2", ...]
+            }},
+            "questions": {{
+                "introduction": ["question1", "question2", ...],
+                "literature_review": ["question1", "question2", ...],
+                "methodology": ["question1", "question2", ...],
+                "results_discussion": ["question1", "question2", ...],
+                "conclusion": ["question1", "question2", ...]
+            }}
         }}
         """
         logger.info("Sending prompt to LLM...")

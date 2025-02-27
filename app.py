@@ -105,11 +105,12 @@ def main():
         st.divider()
         st.markdown("### How it works")
         st.markdown("""
-        1. **Planning Agent**: Creates a research plan
-        2. **Search Agent**: Finds relevant articles
-        3. **Integration Agent**: Saves articles to CSV
+        1. **Planning Agent**: Creates a research and LaTeX report plan
+        2. **Search Agent**: Finds relevant articles on arXiv
+        3. **Integration Agent**: Downloads PDFs and creates CSV
         4. **Abstract Agent**: Summarizes each article
-        5. **Transformation Agent**: Updates CSV with abstracts
+        5. **Transformation Agent**: Updates CSV with abstracts and other details
+        6. **Writing Agent**: Generates LaTeX report
         """)
     
     # Main area - Topic input
@@ -160,38 +161,17 @@ def main():
                     api_key=api_key
                 )
                 
-                # Create progress visualization with spinners
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                with col1:
-                    with st.spinner("Planning..."):
-                        st.session_state.current_step = "planning"
-                        time.sleep(1)  # Simulate some processing time
-                
-                with col2:
-                    with st.spinner("Searching..."):
-                        st.session_state.current_step = "searching"
-                        time.sleep(1)  # Simulate some processing time
-                
-                with col3:
-                    with st.spinner("Integrating..."):
-                        st.session_state.current_step = "integration"
-                        time.sleep(1)  # Simulate some processing time
-                
-                with col4:
-                    with st.spinner("Abstracting..."):
-                        st.session_state.current_step = "abstracting"
-                        time.sleep(1)  # Simulate some processing time
-                
-                with col5:
-                    with st.spinner("Transforming..."):
-                        st.session_state.current_step = "transformation"
-                        time.sleep(1)  # Simulate some processing time
+                # Create progress visualization
+                steps_col = st.columns(1)[0]
+                with steps_col:
+                    st.info("Running complete research workflow. This may take some time...")
+                    progress_bar = st.progress(0)
                 
                 # Actually run the workflow (this might take some time)
                 with st.spinner("Running research workflow..."):
                     results = workflow.run(topic)
                     st.session_state.results = results
+                    progress_bar.progress(100)
                 
                 st.success("Research completed successfully!")
                 st.session_state.research_complete = True
@@ -230,6 +210,15 @@ def main():
             if "expected_outcome" in plan_details:
                 st.write("**Expected Outcome:**")
                 st.write(plan_details["expected_outcome"])
+            
+            # Display LaTeX report plan
+            if "latex_report_plan" in plan_details:
+                st.write("**LaTeX Report Structure:**")
+                latex_plan = plan_details["latex_report_plan"]
+                for section, points in latex_plan.items():
+                    st.write(f"**{section.replace('_', ' ').title()}:**")
+                    for point in points:
+                        st.write(f"- {point}")
         
         # Display search results
         st.header("2. Search Results")
@@ -277,7 +266,27 @@ def main():
                     
                     # Display dataframe with abstracts
                     st.subheader("Articles with Abstracts")
-                    st.dataframe(df[["title", "source", "abstract"]].dropna(subset=["abstract"]), use_container_width=True)
+                    st.dataframe(df["title", "authors", "link", "abstract"].dropna(subset=["abstract"]), use_container_width=True)
+
+        # Display LaTeX report
+        st.header("4. LaTeX Report")
+        if "latex_report" in results:
+            latex_report = results["latex_report"]
+            report_path = results.get("report_path")
+            
+            if report_path and os.path.exists(report_path):
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report_content = f.read()
+                    
+                st.code(report_content, language='latex')
+                
+                # Download LaTeX button
+                st.download_button(
+                    label="Download LaTeX Report",
+                    data=report_content,
+                    file_name="academic_report.tex",
+                    mime="text/plain"
+                )
 
     # Display error if any
     if st.session_state.error:

@@ -3,12 +3,9 @@ from typing import Dict, List, Any
 import os
 
 class TransformationAgent:
-    def __init__(self):
-        """
-        Initialize the transformation agent
-        """
-        pass
-        
+    def __init__(self, data_dir: str):
+        self.data_dir = data_dir
+
     def update_csv_with_abstracts(self, csv_path: str, abstracts: List[Dict[str, Any]]) -> str:
         """
         Update the CSV file with article abstracts
@@ -27,8 +24,8 @@ class TransformationAgent:
             # Create a mapping from file paths to abstracts
             file_to_abstract = {item["file_path"]: item["abstract"] for item in abstracts if "file_path" in item and "abstract" in item}
             
-            # Add abstracts column based on the local_filepath
-            df['abstract'] = df['local_filepath'].map(file_to_abstract)
+            # Add abstracts column based on the local_pdf_path (fix the field name)
+            df['abstract'] = df['local_pdf_path'].map(file_to_abstract)
             
             # Save the updated CSV
             df.to_csv(csv_path, index=False)
@@ -94,3 +91,74 @@ class TransformationAgent:
                 'error': str(e),
                 'csv_path': csv_path
             }
+
+    def generate_csv_with_details(self, articles: List[Dict[str, Any]], rag_agent) -> str:
+        """Generate CSV with article details and communicate with RAGAgent if information is missing"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Process only articles that have local PDF paths
+        processed_articles = []
+        
+        for article in articles:
+            # Skip articles without PDF paths
+            if not article.get('local_pdf_path'):
+                logger.warning(f"Skipping article without PDF path: {article.get('title', 'Unknown')}")
+                continue
+                
+            try:
+                article_copy = article.copy()
+                
+                if not article_copy.get('abstract'):
+                    # Retrieve abstract using RAGAgent
+                    logger.info(f"Retrieving abstract for: {article_copy.get('title', 'Unknown')}")
+                    abstract = rag_agent.retrieve_abstract(article_copy['local_pdf_path'])
+                    article_copy['abstract'] = abstract
+
+                if not article_copy.get('authors'):
+                    # Retrieve authors using RAGAgent
+                    logger.info(f"Retrieving authors for: {article_copy.get('title', 'Unknown')}")
+                    authors = rag_agent.retrieve_authors(article_copy['local_pdf_path'])
+                    article_copy['authors'] = authors
+
+                if not article_copy.get('link'):
+                    # If article has a URL, use it as the link
+                    if article_copy.get('url'):
+                        article_copy['link'] = article_copy['url']
+                    else:
+                        # Retrieve link using RAGAgent
+                        logger.info(f"Retrieving link for: {article_copy.get('title', 'Unknown')}")
+                        link = rag_agent.retrieve_link(article_copy['local_pdf_path'])
+                        article_copy['link'] = link
+                        
+                processed_articles.append(article_copy)
+                
+            except Exception as e:
+                logger.error(f"Error processing article {article.get('title', 'Unknown')}: {e}")
+                # Include article with error information
+                article_copy = article.copy()
+                article_copy['error'] = str(e)
+                processed_articles.append(article_copy)
+
+        # Save to CSV
+        csv_path = self.save_articles_to_csv(processed_articles)
+        logger.info(f"Successfully processed {len(processed_articles)} articles with details")
+        return csv_path
+
+    def save_articles_to_csv(self, articles: List[Dict[str, Any]]) -> str:
+        """Save the collected articles to a CSV file"""
+        # Create DataFrame from articles
+        df = pd.DataFrame(articles)
+        
+        # Select and reorder columns
+        columns = ['title', 'authors', 'link', 'abstract', 'local_pdf_path']
+        for col in columns:
+            if col not in df.columns:
+                df[col] = ''
+                
+        df = df[columns]
+        
+        # Save to CSV
+        csv_path = os.path.join(self.data_dir, 'articles_details.csv')
+        df.to_csv(csv_path, index=False)
+        return csv_path

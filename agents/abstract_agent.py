@@ -1,8 +1,10 @@
 import logging
 from typing import Dict, List, Any, Optional
 import os
+import hashlib
 from dotenv import load_dotenv
 from utils.model_adapter import get_llm_instance
+from agents.rag_agent import RAGAgent
 
 # Configure logging
 logger = logging.getLogger("AbstractAgent")
@@ -32,9 +34,20 @@ class AbstractAgent:
             model_id=model_id,
             api_key=api_key
         )
+        
+        # Initialize RAG agent for PDF processing
+        self.rag_agent = RAGAgent()
         logger.info("AbstractAgent initialized successfully")
         
-    def generate_abstract(self, article_content: str, article_title: str = "", max_words: int = 200) -> str:
+    def is_content_sufficient(self, content: str) -> bool:
+        """Check if content is sufficient for abstract generation"""
+        # Simple heuristic: check if content has enough words and structure
+        words = content.split()
+        has_min_words = len(words) >= 100
+        has_paragraphs = content.count('\n\n') >= 2
+        return has_min_words and has_paragraphs
+        
+    def generate_abstract(self, article_content: str, article_title: str = "", max_words: int = 200, pdf_url: Optional[str] = None) -> str:
         """
         Generate an abstract/summary for an article
         
@@ -42,15 +55,29 @@ class AbstractAgent:
             article_content: The content of the article
             article_title: The title of the article
             max_words: Maximum length of the summary in words
+            pdf_url: Optional URL to PDF version of the article
             
         Returns:
             A concise summary of the article
         """
         logger.info("Generating abstract...")
         
+        # Check if content is sufficient
+        if not self.is_content_sufficient(article_content) and pdf_url:
+            logger.info("Content insufficient, attempting to process PDF...")
+            # Generate a unique ID for the article
+            article_id = hashlib.md5(pdf_url.encode()).hexdigest()
+            
+            # Extract content from PDF
+            pdf_result = self.rag_agent.extract_article_content(pdf_url, article_id)
+            if pdf_result["success"]:
+                article_content = pdf_result["content"]
+                logger.info("Successfully extracted content from PDF")
+            else:
+                logger.warning(f"Failed to process PDF: {pdf_result.get('error')}")
+        
         # Truncate content if it's too long to fit in the context window
-        # This is a simple approach - a more sophisticated one would use a smarter chunking strategy
-        max_content_length = 10000  # Approximate token limit
+        max_content_length = 100000  # Approximate token limit
         if len(article_content) > max_content_length:
             article_content = article_content[:max_content_length] + "..."
             
@@ -84,12 +111,13 @@ class AbstractAgent:
             logger.error(f"Error generating abstract: {e}")
             return f"Error generating abstract: {e}"
             
-    def process_article_file(self, file_path: str) -> Dict[str, Any]:
+    def process_article_file(self, file_path: str, pdf_url: Optional[str] = None) -> Dict[str, Any]:
         """
         Read an article file and generate an abstract
         
         Args:
             file_path: Path to the article file
+            pdf_url: Optional URL to PDF version of the article
             
         Returns:
             Dictionary with the article path and its abstract
@@ -115,12 +143,14 @@ class AbstractAgent:
             article_content = "\n".join(lines[3:]) if len(lines) >= 3 else content
             
             # Generate abstract
-            abstract = self.generate_abstract(article_content, title)
+            logger.info(f"Generating abstract for: {title}")
+            abstract = self.generate_abstract(article_content, title, pdf_url=pdf_url)
             
             return {
                 "file_path": file_path,
                 "title": title,
-                "abstract": abstract
+                "abstract": abstract,
+                "pdf_processed": pdf_url is not None
             }
             
         except Exception as e:

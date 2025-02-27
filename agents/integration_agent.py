@@ -1,112 +1,95 @@
 import os
-import csv
-import pandas as pd
-import datetime
-from typing import Dict, List, Any
-from pathlib import Path
+import requests
+from typing import List, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 class IntegrationAgent:
     def __init__(self, data_dir: str = "data"):
-        """
-        Initialize the integration agent
-        
-        Args:
-            data_dir: Directory to save data files
-        """
         self.data_dir = data_dir
-        self.ensure_data_dir()
-        
-    def ensure_data_dir(self):
-        """Ensure the data directory exists"""
-        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
-        
-    def save_articles_to_csv(self, articles: List[Dict[str, Any]], topic: str) -> str:
-        """
-        Save the collected articles to a CSV file
-        
-        Args:
-            articles: List of article dictionaries
-            topic: Research topic
-            
-        Returns:
-            Path to the saved CSV file
-        """
-        # Create filename with topic and date
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        sanitized_topic = topic.replace(" ", "_").lower()
-        csv_filename = f"{sanitized_topic}_{timestamp}.csv"
-        csv_path = os.path.join(self.data_dir, csv_filename)
-        
-        # Create DataFrame from articles
-        df = pd.DataFrame(articles)
-        
-        # Select and reorder columns
-        columns = ['title', 'url', 'source', 'query', 'snippet']
-        for col in columns:
-            if col not in df.columns:
-                df[col] = ''
-                
-        df = df[columns]
-        
-        # Save to CSV
-        df.to_csv(csv_path, index=False)
-        
-        return csv_path
-    
-    def download_article_content(self, articles: List[Dict[str, Any]], article_contents: List[Dict[str, Any]]) -> Dict[str, str]:
-        """
-        Download and save article content to files
-        
-        Args:
-            articles: List of article dictionaries
-            article_contents: List of article content dictionaries
-            
-        Returns:
-            Dictionary mapping URLs to file paths
-        """
-        url_to_filepath = {}
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        for i, content in enumerate(article_contents):
-            if content.get("content_length", 0) == 0:
-                # Skip articles with no content
-                continue
-                
-            # Create a sanitized filename
-            title_part = articles[i]["title"][:30].replace(" ", "_")
-            title_part = ''.join(c if c.isalnum() or c == '_' else '' for c in title_part)
-            filename = f"article_{i}_{timestamp}_{title_part}.txt"
+
+    def download_pdf(self, pdf_url: str, title: str) -> str:
+        """Download PDF from arXiv and save with the article's title"""
+        try:
+            # Create sanitized filename
+            sanitized_title = ''.join(c if c.isalnum() or c == '_' else '' for c in title)
+            filename = f"{sanitized_title[:100]}.pdf"
             filepath = os.path.join(self.data_dir, filename)
-            
-            # Save the content to a file
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(f"Title: {content.get('title', '')}\n")
-                f.write(f"URL: {content.get('url', '')}\n\n")
-                f.write(content.get('content', ''))
-                
-            # Map URL to filepath
-            url_to_filepath[content.get('url', '')] = filepath
-            
-        return url_to_filepath
+
+            # Download PDF
+            response = requests.get(pdf_url, stream=True)
+            response.raise_for_status()
+
+            # Save PDF
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            logger.info(f"Successfully downloaded PDF: {filename}")
+            return filepath
+
+        except Exception as e:
+            logger.error(f"Error downloading PDF from {pdf_url}: {e}")
+            return ""
+
+    def process_articles(self, articles: List[Dict[str, Any]], topic: str) -> tuple:
+        """Process articles: download PDFs and create CSV
         
-    def update_csv_with_filepaths(self, csv_path: str, url_to_filepath: Dict[str, str]) -> str:
-        """
-        Update the CSV file with local file paths
-        
-        Args:
-            csv_path: Path to the CSV file
-            url_to_filepath: Dictionary mapping URLs to file paths
-            
         Returns:
-            Path to the updated CSV file
+            tuple: (csv_path, url_to_filepath) - CSV file path and mapping of URLs to local file paths
         """
-        # Read the CSV file
-        df = pd.read_csv(csv_path)
-        
-        # Add filepath column
-        df['local_filepath'] = df['url'].map(url_to_filepath)
-        
-        # Save the updated CSV
-        df.to_csv(csv_path, index=False)
-        
-        return csv_path
+        # Download PDFs for each article
+        for article in articles:
+            if article.get('pdf_url'):
+                pdf_path = self.download_pdf(article['pdf_url'], article['title'])
+                article['local_pdf_path'] = pdf_path
+
+        # Save to CSV and get URL to filepath mapping
+        csv_path, url_to_filepath = self.save_articles_to_csv(articles, topic)
+        return csv_path, url_to_filepath
+
+    def save_articles_to_csv(self, articles: List[Dict[str, Any]], topic: str) -> str:
+        """Save the collected articles to a CSV file"""
+        try:
+            import pandas as pd
+            import os
+            
+            # Create a sanitized filename for the CSV
+            sanitized_topic = ''.join(c if c.isalnum() or c == '_' else '_' for c in topic)
+            csv_filename = f"{sanitized_topic}_research_articles.csv"
+            csv_path = os.path.join(self.data_dir, csv_filename)
+            
+            # Extract data for CSV
+            data = []
+            url_to_filepath = {}
+            
+            for article in articles:
+                row = {}
+                for key in ['title', 'url', 'source', 'query', 'snippet', 'pdf_url']:
+                    row[key] = article.get(key, '')
+                
+                # Track local PDF path
+                local_pdf_path = article.get('local_pdf_path', '')
+                row['local_pdf_path'] = local_pdf_path
+                
+                # Keep track of which URL maps to which file path
+                if local_pdf_path and article.get('url'):
+                    url_to_filepath[article['url']] = local_pdf_path
+                
+                data.append(row)
+            
+            # Create DataFrame and save to CSV
+            if data:
+                df = pd.DataFrame(data)
+                df.to_csv(csv_path, index=False)
+                logger.info(f"Saved {len(data)} articles to CSV: {csv_path}")
+                return csv_path, url_to_filepath
+            else:
+                logger.warning("No articles to save to CSV")
+                return None, {}
+                
+        except Exception as e:
+            logger.error(f"Error saving articles to CSV: {e}")
+            return None, {}
